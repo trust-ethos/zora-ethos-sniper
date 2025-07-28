@@ -1,0 +1,35 @@
+{
+  "name": "zora-ethos-sniper",
+  "version": "1.0.0",
+  "exports": "./src/main.ts",
+  "tasks": {
+    "start": "deno run --allow-net --allow-env --allow-read --allow-write src/main.ts",
+    "dev": "deno run --allow-net --allow-env --allow-read --allow-write --watch src/main.ts",
+    "test": "deno test --allow-net --allow-env --allow-read",
+    "status": "deno run --allow-net --allow-env --allow-read scripts/bot-status.ts",
+    "test-ethos": "deno run --allow-net scripts/test-ethos.ts",
+    "test-events": "deno run --allow-net --allow-env --allow-read scripts/test-events.ts",
+    "test-parsing": "deno run --allow-net --allow-env --allow-read scripts/test-bot-parsing.ts",
+    "test-enhanced": "deno run --allow-net --allow-env --allow-read scripts/test-enhanced-detection.ts",
+    "test-creator-flow": "deno run --allow-net --allow-env --allow-read scripts/test-creator-coin-flow.ts",
+    "test-twitter": "deno run --allow-net --allow-env --allow-read scripts/test-twitter-extraction.ts",
+    "debug-zora": "deno run --allow-net --allow-env --allow-read scripts/debug-zora-response.ts",
+    "test-twitter-only": "deno run --allow-net --allow-env --allow-read scripts/test-twitter-only-strategy.ts",
+    "test-log-levels": "deno run --allow-net --allow-env --allow-read scripts/test-log-levels.ts",
+    "test-validation": "deno run --allow-net --allow-env --allow-read scripts/test-ethos-validation.ts",
+    "test-startup": "deno run --allow-net --allow-env --allow-read scripts/test-startup-filtering.ts",
+    "test-strict": "deno run --allow-net --allow-env --allow-read scripts/test-strict-filtering.ts"
+  },
+  "imports": {
+    "@std/dotenv": "jsr:@std/dotenv@^0.225.0",
+    "@std/log": "jsr:@std/log@^0.224.0",
+    "viem": "npm:viem@^2.21.0",
+    "ethers": "npm:ethers@^6.13.0",
+    "@zoralabs/coins-sdk": "npm:@zoralabs/coins-sdk@latest"
+  },
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["deno.window"],
+    "strict": true
+  }
+} 

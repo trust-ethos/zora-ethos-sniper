@@ -1,0 +1,63 @@
+# Environment variables and secrets
+.env
+.env.*
+!config.example.env
+
+# Private keys and sensitive data
+*.key
+*.pem
+*secret*
+*private*
+wallet.json
+keystore/
+
+# Logs and temporary files
+logs/
+*.log
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# Deno cache
+.deno/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build outputs
+dist/
+build/
+out/
+
+# Node.js (if any)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Trading data and backups
+positions.json
+trades.json
+backup/
+data/
+
+# Test results
+test-results/
+coverage/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary directories
+tmp/
+temp/ 
