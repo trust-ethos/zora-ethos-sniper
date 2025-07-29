@@ -279,6 +279,7 @@ deno task test-strict
 ### 🔗 **External Dependencies**
 - **Zora Protocol** - Creator coin contracts on Base network
 - **Ethos Network** - Reputation scoring API (no API key required)
+- **Uniswap V4** - Latest AMM protocol with PoolManager architecture
 - **Base Network** - Ethereum L2 blockchain
 - **RPC Provider** - Alchemy, Infura, or QuickNode recommended
 

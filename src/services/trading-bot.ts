@@ -3,6 +3,8 @@ import type { BotConfig } from "../config/config.ts";
 import type { EthosService } from "./ethos-service.ts";
 import type { ZoraCoinCreatedEvent } from "./zora-listener.ts";
 import type { ZoraProfile } from "./zora-profile-service.ts";
+import { DexService, type TradeResult } from "./dex-service.ts";
+import type { Address } from "viem";
 
 export interface TradePosition {
   coinAddress: string;
@@ -27,11 +29,14 @@ export class TradingBot {
   private activePositions: Map<string, TradePosition> = new Map();
   private positionHistory: TradePosition[] = [];
   private isMonitoring = false;
+  private dexService: DexService;
 
   constructor(
     private config: BotConfig,
     private ethosService: EthosService
-  ) {}
+  ) {
+    this.dexService = new DexService(config);
+  }
 
   async evaluateAndTrade(
     event: ZoraCoinCreatedEvent,
@@ -48,21 +53,29 @@ export class TradingBot {
       log.info(`   🔗 Coin Address: ${event.coin}`);
       log.info(`   👤 Creator: ${event.caller}`);
 
-      // Check if we should trade based on various criteria
-      const shouldTrade = await this.shouldExecuteTrade(event, ethosScore);
+          // Check if we should trade based on various criteria
+    const shouldTrade = await this.shouldExecuteTrade(event, ethosScore);
+    
+    if (!shouldTrade) {
+      log.info(`   ❌ Trade evaluation failed, skipping...`);
+      return false;
+    }
+
+    if (this.config.simulationMode) {
+      log.warn(`   ✅ Trade criteria met! SIMULATING trade with ${this.config.tradeAmountEth} ETH`);
+      log.warn(`   🎭 This is simulation mode - no real money will be spent`);
+    } else {
+      log.warn(`   ✅ Trade criteria met! EXECUTING REAL trade with ${this.config.tradeAmountEth} ETH`);
+      log.warn(`   ⚠️  This will spend REAL money from your wallet!`);
       
-      if (!shouldTrade) {
-        log.info(`   ❌ Trade evaluation failed, skipping...`);
+      // Show DEX service status
+      const dexStatus = this.dexService.getTradingStatus();
+      if (!dexStatus.ready) {
+        log.error(`   ❌ DEX service not ready for trading:`);
+        dexStatus.issues.forEach(issue => log.error(`      • ${issue}`));
         return false;
       }
-
-      if (this.config.simulationMode) {
-        log.warn(`   ✅ Trade criteria met! SIMULATING trade with ${this.config.maxInvestmentEth} ETH`);
-        log.warn(`   🎭 This is simulation mode - no real money will be spent`);
-      } else {
-        log.warn(`   ✅ Trade criteria met! EXECUTING REAL trade with ${this.config.maxInvestmentEth} ETH`);
-        log.warn(`   ⚠️  This will spend REAL money from your wallet!`);
-      }
+    }
       
       // Create a position (simulated or real based on mode)
       await this.createPosition(event, ethosScore, ethosAddress, creatorProfile);
@@ -90,8 +103,8 @@ export class TradingBot {
     }
 
     // Check if we already have too many active positions
-    if (this.activePositions.size >= 5) { // Max 5 concurrent positions
-      log.info(`   ❌ Too many active positions (${this.activePositions.size}/5)`);
+    if (this.activePositions.size >= this.config.maxPositions) {
+      log.info(`   ❌ Too many active positions (${this.activePositions.size}/${this.config.maxPositions})`);
       return false;
     }
 
@@ -119,39 +132,88 @@ export class TradingBot {
     creatorProfile?: ZoraProfile
   ): Promise<void> {
     const now = new Date();
-    const entryPrice = 0.001; // Simulated entry price (in ETH)
-    const entryAmount = this.config.maxInvestmentEth;
+    const tradeAmount = this.config.tradeAmountEth;
 
-    const position: TradePosition = {
-      coinAddress: event.coin.toLowerCase(),
-      coinName: event.name,
-      coinSymbol: event.symbol,
-      entryPrice,
-      entryAmount,
-      entryTime: now,
-      ethosScore,
-      ethosAddress,
-      takeProfitTarget: entryPrice * (1 + this.config.takeProfitPercentage / 100),
-      stopLossTarget: entryPrice * (1 - this.config.stopLossPercentage / 100),
-      maxHoldTime: new Date(now.getTime() + this.config.maxHoldTimeMinutes * 60000),
-      isActive: true,
-    };
-
-    this.activePositions.set(position.coinAddress, position);
+    // Check DEX service status for live trading
+    if (!this.config.simulationMode) {
+      const dexStatus = this.dexService.getTradingStatus();
+      if (!dexStatus.ready) {
+        log.error(`❌ Cannot execute live trade - DEX service not ready:`);
+        dexStatus.issues.forEach(issue => log.error(`   • ${issue}`));
+        return;
+      }
+    }
 
     const modeEmoji = this.config.simulationMode ? "🎭" : "💰";
     const modeText = this.config.simulationMode ? "[SIMULATION]" : "[LIVE TRADE]";
     
-    log.warn(`${modeEmoji} ${modeText} Created position for ${position.coinName}:`);
-    log.warn(`   💵 Entry Price: ${position.entryPrice} ETH`);
-    log.warn(`   📊 Amount: ${position.entryAmount} ETH`);
-    log.warn(`   📈 Take Profit: ${position.takeProfitTarget} ETH (+${this.config.takeProfitPercentage}%)`);
-    log.warn(`   📉 Stop Loss: ${position.stopLossTarget} ETH (-${this.config.stopLossPercentage}%)`);
+    log.warn(`${modeEmoji} ${modeText} Creating position for ${event.name}:`);
+    log.warn(`   💵 Trade Amount: ${tradeAmount} ETH`);
+    log.warn(`   🎯 Target: ${event.coin}`);
+    log.warn(`   📊 Ethos Score: ${ethosScore}`);
+
+    let tradeResult: TradeResult;
+    let actualEntryPrice = 0.001; // Default/simulated price
+
+    if (this.config.simulationMode) {
+      // Simulation mode - create position object only
+      tradeResult = {
+        success: true,
+        amountIn: tradeAmount.toString(),
+        amountOut: "1000", // Simulated tokens received
+        transactionHash: "0x" + Math.random().toString(16).slice(2),
+      };
+      log.info(`   🎭 This is a simulated position - tracking for learning purposes`);
+    } else {
+      // Live trading mode - execute actual transaction
+      log.warn(`   ⚠️  EXECUTING REAL TRANSACTION WITH REAL MONEY!`);
+      
+      tradeResult = await this.dexService.buyToken(
+        event.coin as Address,
+        tradeAmount
+      );
+
+      if (!tradeResult.success) {
+        log.error(`❌ Failed to execute buy transaction: ${tradeResult.error}`);
+        return;
+      }
+
+      log.warn(`✅ Live trade executed successfully!`);
+      log.warn(`   TX Hash: ${tradeResult.transactionHash}`);
+      log.warn(`   Tokens Received: ${tradeResult.amountOut}`);
+      
+      // Use actual trade data for position
+      actualEntryPrice = parseFloat(tradeResult.amountIn) / parseFloat(tradeResult.amountOut || "1");
+    }
+
+    // Create position tracking object
+    const position: TradePosition = {
+      coinAddress: event.coin.toLowerCase(),
+      coinName: event.name,
+      coinSymbol: event.symbol,
+      entryPrice: actualEntryPrice,
+      entryAmount: tradeAmount,
+      entryTime: now,
+      ethosScore,
+      ethosAddress,
+      takeProfitTarget: actualEntryPrice * (1 + this.config.takeProfitPercent / 100),
+      stopLossTarget: actualEntryPrice * (1 - this.config.stopLossPercent / 100),
+      maxHoldTime: new Date(now.getTime() + this.config.maxHoldTimeMinutes * 60000),
+      isActive: true,
+    };
+
+    // Store the position for monitoring
+    this.activePositions.set(position.coinAddress, position);
+
+    log.warn(`📊 Position Details:`);
+    log.warn(`   📈 Take Profit: ${position.takeProfitTarget.toFixed(6)} ETH (+${this.config.takeProfitPercent}%)`);
+    log.warn(`   📉 Stop Loss: ${position.stopLossTarget.toFixed(6)} ETH (-${this.config.stopLossPercent}%)`);
     log.warn(`   ⏰ Max Hold Time: ${position.maxHoldTime.toISOString()}`);
     
     if (this.config.simulationMode) {
-      log.info(`   🎯 Ethos Score: ${position.ethosScore} (${position.ethosAddress})`);
-      log.info(`   🔍 This is a simulated position - tracking for learning purposes`);
+      log.info(`   🔍 Position created in simulation mode`);
+    } else {
+      log.warn(`   💰 LIVE POSITION CREATED - Real money at risk!`);
     }
   }
 
@@ -283,8 +345,25 @@ export class TradingBot {
       log.info(`   🎭 This was a simulated position - no real money was involved`);
       this.logSimulationSummary();
     } else {
-      log.info(`   🔄 Executing REAL sell order for ${position.coinSymbol}...`);
-      // Here you would execute the actual sell order in a real implementation
+      log.warn(`   🔄 Executing REAL sell order for ${position.coinSymbol}...`);
+      log.warn(`   ⚠️  SELLING REAL TOKENS FOR REAL MONEY!`);
+      
+      // Execute actual sell transaction
+      const tokenAmount = BigInt(Math.floor(parseFloat(position.entryAmount.toString()) / position.entryPrice * 1e18)); // Convert to token units
+      
+      const sellResult = await this.dexService.sellToken(
+        position.coinAddress as Address,
+        tokenAmount
+      );
+      
+      if (sellResult.success) {
+        log.warn(`   ✅ Sell transaction successful!`);
+        log.warn(`   📝 TX Hash: ${sellResult.transactionHash}`);
+        log.warn(`   💰 ETH Received: ${sellResult.amountOut}`);
+      } else {
+        log.error(`   ❌ Sell transaction failed: ${sellResult.error}`);
+        log.error(`   🚨 Manual intervention may be required!`);
+      }
     }
   }
 
