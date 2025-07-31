@@ -264,7 +264,32 @@ export class DexService {
       log.info(`      Amount: ${tokenAmount} tokens`);
       log.info(`      Slippage: ${this.config.maxSlippagePercent}%`);
 
-      // Execute trade using official Zora SDK (with permit handling)
+      // Step 1: Test quote with retry logic (same as buyToken)
+      log.info(`   🔄 Step 1: Testing sell quote for ${tokenAddress}...`);
+      let lastQuoteError: Error | null = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const { createTradeCall } = await import("@zoralabs/coins-sdk");
+          const testQuote = await createTradeCall(tradeParameters);
+          log.info(`   ✅ Sell quote successful: ${formatEther(BigInt(testQuote.call.value || 0))} ETH expected (attempt ${attempt})`);
+          break; // Success, exit retry loop
+        } catch (quoteError) {
+          lastQuoteError = quoteError instanceof Error ? quoteError : new Error(String(quoteError));
+          log.warn(`   ⚠️ Sell quote attempt ${attempt} failed: ${lastQuoteError.message}`);
+          if (attempt < 3) {
+            const delayMs = Math.pow(2, attempt) * 1000; // Exponential backoff: 2s, 4s
+            log.info(`   ⏳ Retrying in ${delayMs}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+          }
+        }
+      }
+      if (lastQuoteError) {
+        log.error(`   ❌ All sell quote attempts failed: ${lastQuoteError.message}`);
+        throw new Error(`Sell quote failed after 3 attempts: ${lastQuoteError.message}`);
+      }
+
+      // Step 2: Execute the actual sell trade
+      log.info(`   🔄 Step 2: Executing sell trade...`);
       const receipt = await tradeCoin({
         tradeParameters,
         walletClient: this.walletClient,
@@ -287,7 +312,44 @@ export class DexService {
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      log.error(`❌ Zora SDK sell failed: ${errorMessage}`);
+      log.error(`❌ Zora SDK sell failed for token ${tokenAddress}:`);
+      log.error(`   Error: ${errorMessage}`);
+      log.error(`   Error type: ${error instanceof Error ? error.constructor.name : typeof error}`);
+      
+      // Enhanced error classification for selling
+      if (errorMessage.includes('insufficient')) {
+        log.error(`   💡 This appears to be an insufficient balance error`);
+        log.error(`   🔍 Possible causes:`);
+        log.error(`      • Not enough tokens to sell`);
+        log.error(`      • Token allowance issues`);
+        log.error(`      • Gas fee calculation problems`);
+      } else if (errorMessage.includes('quote') || errorMessage.includes('Quote')) {
+        log.error(`   💡 This appears to be a quote/liquidity error`);
+        log.error(`   🔍 Possible causes:`);
+        log.error(`      • Token has insufficient sell liquidity`);
+        log.error(`      • Token price has moved significantly`);
+        log.error(`      • Slippage tolerance too low`);
+        log.error(`      • API rate limiting or network issues`);
+      } else if (errorMessage.includes('permit') || errorMessage.includes('allowance')) {
+        log.error(`   💡 This appears to be a token permission error`);
+        log.error(`   🔍 Possible causes:`);
+        log.error(`      • Token approve/permit required before selling`);
+        log.error(`      • Allowance insufficient for sell amount`);
+        log.error(`      • ERC20 permission issues`);
+      } else {
+        log.error(`   💡 This appears to be a general trading error`);
+        log.error(`   🔍 Possible causes:`);
+        log.error(`      • Network connectivity issues`);
+        log.error(`      • Transaction execution failure`);
+        log.error(`      • Contract interaction problems`);
+      }
+
+      if (error instanceof Error && error.stack) {
+        const stackLines = error.stack.split('\n').slice(0, 3);
+        log.error(`   Stack trace (first 3 lines):`);
+        stackLines.forEach(line => log.error(`     ${line}`));
+      }
+
       return {
         success: false,
         amountIn: tokenAmount.toString(),
