@@ -211,8 +211,37 @@ export class ZoraListener {
         return;
       }
 
-      // Show truly fresh coin detection
-      const eventAge = Math.floor((Date.now() / 1000) - eventTimestamp);
+      // Enhanced event analysis for debugging timing issues
+      const currentTime = Math.floor(Date.now() / 1000);
+      const eventAge = currentTime - eventTimestamp;
+      const blockAge = Number(currentBlock - event.blockNumber);
+
+      log.warn(`🔍 EVENT ANALYSIS:`);
+      log.warn(`   Token: ${event.coin}`);
+      log.warn(`   Event Time: ${new Date(eventTimestamp * 1000).toISOString()}`);
+      log.warn(`   Current Time: ${new Date(currentTime * 1000).toISOString()}`);
+      log.warn(`   Event Age: ${eventAge}s (${(eventAge/60).toFixed(1)} minutes)`);
+      log.warn(`   Block Age: ${blockAge} blocks`);
+      log.warn(`   Startup Time: ${new Date(this.startupTimestamp * 1000).toISOString()}`);
+      log.warn(`   Time Since Startup: ${currentTime - this.startupTimestamp}s`);
+
+      if (eventAge > 300) { // 5 minutes
+        log.warn(`   🚨 SUSPICIOUS: Event is ${(eventAge/60).toFixed(1)} minutes old!`);
+        log.warn(`   🚨 This should have been filtered out by age checks!`);
+      }
+
+      if (eventAge > 120) { // 2 minutes
+        log.warn(`   ⚠️  WARNING: Event is ${(eventAge/60).toFixed(1)} minutes old`);
+        log.warn(`   ⚠️  Verify this is actually a fresh token creation`);
+      }
+
+      // STRICT TIME-BASED FILTER: Additional safety check
+      if (eventAge > 600) { // 10 minutes - absolutely no old events
+        log.warn(`🚫 STRICT FILTER: Event is ${(eventAge/60).toFixed(1)} minutes old - rejecting`);
+        log.warn(`   This event is too old to be a fresh token creation`);
+        return;
+      }
+
       log.info(`🪙 FRESH COIN: ${event.name} (${event.symbol}) - ${eventAge}s old`);
       log.info(`   Creator: ${event.caller}`);
       log.info(`   Block: ${event.blockNumber}, TX: ${event.transactionHash}`);

@@ -65,6 +65,8 @@
     "test-threshold": "deno run --allow-net --allow-env --allow-read scripts/test-strategy-threshold.ts",
     "test-warn-fix": "deno run --allow-net --allow-env --allow-read scripts/test-warn-logging-fix.ts",
     "test-sell-fix": "deno run --allow-net --allow-env --allow-read scripts/test-sell-functionality.ts",
+    "investigate-timing": "deno run --allow-net --allow-env --allow-read scripts/investigate-token-timing.ts",
+    "check-basescan": "deno run --allow-net --allow-env --allow-read scripts/check-token-basescan.ts",
     "check-networks": "deno run --allow-net --allow-env --allow-read scripts/check-zora-network.ts"
   },
   "imports": {
