@@ -69,10 +69,10 @@ export class ZoraListener {
       this.lastProcessedBlock = currentBlock;
       
       log.info(`Starting to monitor from block ${currentBlock}`);
-      log.warn("🔍 Bot initialized - will only process events created AFTER this moment");
-      log.warn(`📅 Startup time: ${new Date().toISOString()}`);
-      log.warn(`🔢 Startup block: ${currentBlock}`);
-      log.warn("⚡ Zero tolerance for historical events - only real-time detection!");
+      log.info("🔍 Bot initialized - will only process events created AFTER this moment");
+      log.info(`📅 Startup time: ${new Date().toISOString()}`);
+      log.info(`🔢 Startup block: ${currentBlock}`);
+      log.info("⚡ Zero tolerance for historical events - only real-time detection!");
 
       // Start watching for new events
       await this.watchForNewCoins();
@@ -198,7 +198,7 @@ export class ZoraListener {
       
       // Filter 2: Event must be very recent (max 10 blocks = ~2 minutes old)
       if (blockAge > 10) {
-        log.warn(`🚫 FILTERED: Event too old - ${blockAge} blocks ago (${event.name})`);
+        log.info(`🚫 FILTERED: Event too old - ${blockAge} blocks ago (${event.name})`);
         return;
       }
       
@@ -213,7 +213,7 @@ export class ZoraListener {
 
       // Show truly fresh coin detection
       const eventAge = Math.floor((Date.now() / 1000) - eventTimestamp);
-      log.warn(`🪙 FRESH COIN: ${event.name} (${event.symbol}) - ${eventAge}s old`);
+      log.info(`🪙 FRESH COIN: ${event.name} (${event.symbol}) - ${eventAge}s old`);
       log.info(`   Creator: ${event.caller}`);
       log.info(`   Block: ${event.blockNumber}, TX: ${event.transactionHash}`);
 
@@ -221,13 +221,13 @@ export class ZoraListener {
       const creatorProfile = await this.zoraProfileService.getProfileByAddress(event.caller);
       
       if (!creatorProfile) {
-        log.warn(`   ❌ No Zora profile - SKIPPED (not a creator coin)`);
+        log.info(`   ❌ No Zora profile - SKIPPED (not a creator coin)`);
         return;
       }
 
       // Check if this is actually a creator coin launch
       if (!this.zoraProfileService.isCreatorCoin(creatorProfile)) {
-        log.warn(`   ❌ No creator coin - SKIPPED (not a creator launch)`);
+        log.info(`   ❌ No creator coin - SKIPPED (not a creator launch)`);
         log.debug(`   Profile details: Handle=${creatorProfile.handle}, CreatorCoin=${creatorProfile.creatorCoinAddress}`);
         return;
       }
@@ -248,31 +248,48 @@ export class ZoraListener {
 
       // Only process creators with Twitter accounts
       if (!creatorProfile.twitterUsername) {
-        log.warn(`   ❌ No Twitter - SKIPPED (Twitter required)`);
+        log.info(`   ❌ No Twitter - SKIPPED (Twitter required)`);
         return;
       }
 
-      log.warn(`   🐦 Checking Ethos for @${creatorProfile.twitterUsername}...`);
+      log.info(`   🐦 Checking Ethos for @${creatorProfile.twitterUsername}...`);
       
       // Get Ethos score using Twitter username
       const ethosScore = await this.ethosService.getScoreByTwitterUsername(creatorProfile.twitterUsername);
       
       if (ethosScore === null) {
-        log.warn(`   ❌ No Ethos score - SKIPPED (@${creatorProfile.twitterUsername})`);
+        log.info(`   ❌ No Ethos score - SKIPPED (@${creatorProfile.twitterUsername})`);
         return;
       }
 
-      log.warn(`   📊 Ethos score: ${ethosScore} (${this.ethosService.getRiskAssessment(ethosScore)})`);
+      log.info(`   📊 Ethos score: ${ethosScore} (${this.ethosService.getRiskAssessment(ethosScore)})`);
       log.info(`   🎯 Risk assessment: ${this.ethosService.getRiskAssessment(ethosScore)}`);
 
       // Check if the score meets our threshold
       if (this.ethosService.meetsScoreThreshold(ethosScore, this.config.minEthosScore)) {
         log.warn(`   ✅ QUALIFIES! Score ${ethosScore} ≥ ${this.config.minEthosScore}`);
         
-        // Notify the trading bot with enhanced data
-        await this.tradingBot.evaluateAndTrade(event, ethosScore, event.caller, creatorProfile);
+        // Notify the trading bot with enhanced data and error handling
+        try {
+          await this.tradingBot.evaluateAndTrade(event, ethosScore, event.caller, creatorProfile);
+        } catch (tradeError) {
+          const tradeErrorMsg = tradeError instanceof Error ? tradeError.message : String(tradeError);
+          log.error(`❌ Trading failed for ${event.name} (${event.coin}): ${tradeErrorMsg}`);
+          
+          // Log specific error types for debugging
+          if (tradeErrorMsg.includes('does not exist')) {
+            log.error(`🔍 TOKEN NOT FOUND: ${event.coin} - Contract does not exist on Base`);
+          } else if (tradeErrorMsg.includes('Quote failed')) {
+            log.error(`🔍 QUOTE FAILURE: ${event.coin} - Zora API issues`);
+          } else if (tradeErrorMsg.includes('500')) {
+            log.error(`🔍 SERVER ERROR: ${event.coin} - Zora API server error`);
+          }
+          
+          // Continue monitoring other events
+          log.info(`🔄 Continuing to monitor for other opportunities...`);
+        }
       } else {
-        log.warn(`   ❌ Score too low - SKIPPED (${ethosScore} < ${this.config.minEthosScore})`);
+        log.info(`   ❌ Score too low - SKIPPED (${ethosScore} < ${this.config.minEthosScore})`);
       }
 
     } catch (error) {
@@ -381,17 +398,28 @@ export class ZoraListener {
         }
       }
 
-      // Extract addresses (look for 20-byte patterns)
-      const addressMatches = data.match(/([0-9a-f]{40})/g);
+      // Extract coin address from the correct position in event data
+      // Based on investigation: coin address is at the start of the data field
       let coin: Address | undefined;
       let currency: Address | undefined;
 
-      if (addressMatches && addressMatches.length > 0) {
-        // First address is likely the coin
-        coin = `0x${addressMatches[0]}` as Address;
-        // Second might be currency/pool
-        if (addressMatches.length > 1) {
-          currency = `0x${addressMatches[1]}` as Address;
+      if (data && data.length >= 66) {
+        // Extract the coin address from bytes 12-32 of the data (skip padding zeros)
+        const coinAddressHex = data.slice(26, 66); // 40 hex chars = 20 bytes
+        coin = `0x${coinAddressHex}` as Address;
+        
+        log.debug(`🔍 Event data extraction:`);
+        log.debug(`   Raw data: ${data.slice(0, 100)}...`);
+        log.debug(`   Extracted coin: ${coin}`);
+        
+        // Extract currency/pool address if it exists (next 32 bytes)
+        if (data.length >= 130) {
+          const currencyAddressHex = data.slice(90, 130); // Next 40 hex chars
+          // Only use if it's not all zeros
+          if (currencyAddressHex !== '0'.repeat(40)) {
+            currency = `0x${currencyAddressHex}` as Address;
+            log.debug(`   Extracted currency: ${currency}`);
+          }
         }
       }
 

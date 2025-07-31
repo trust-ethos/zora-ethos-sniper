@@ -5,11 +5,26 @@ import { EthosService } from "./services/ethos-service.ts";
 import { ZoraProfileService } from "./services/zora-profile-service.ts";
 import { TradingBot } from "./services/trading-bot.ts";
 import { Config } from "./config/config.ts";
+import { parseCliArgs, displaySelectedStrategy } from "./cli/cli-parser.ts";
 
 async function main() {
   try {
+    // Parse command line arguments
+    const cliOptions = parseCliArgs(Deno.args);
+    
     // Load environment variables
     await load({ export: true });
+    
+    // Override environment variables with CLI options if provided
+    if (cliOptions.dryRun) {
+      Deno.env.set("DRY_RUN_MODE", "true");
+    }
+    if (cliOptions.simulation) {
+      Deno.env.set("SIMULATION_MODE", "true");
+    }
+    if (cliOptions.verbose) {
+      Deno.env.set("LOG_LEVEL", "DEBUG");
+    }
     
     // Setup logging
     log.setup({
@@ -27,10 +42,13 @@ async function main() {
       },
     });
 
-    log.info("🚀 Starting Zora Ethos Sniper Bot...");
+    log.info("🚀 Starting Zora Ethos Sniper Bot with Strategy System...");
 
     // Load configuration
     const config = Config.load();
+    
+    // Display selected strategy
+    displaySelectedStrategy(cliOptions.strategy);
     
     // Update log level based on config
     const logLevel = config.logLevel.toUpperCase();
@@ -60,16 +78,16 @@ async function main() {
     
     if (logLevel === "WARN") {
       log.warn("📊 QUIET MODE: Only showing trades and important events");
-      log.warn(`📊 Configuration: Min Ethos Score: ${config.minEthosScore}, Max Investment: ${config.maxInvestmentEth} ETH`);
+      log.warn(`📊 Active Strategy: Min Ethos Score: ${cliOptions.strategy.minEthosScore}, Trade Amount: ${cliOptions.strategy.tradeAmountEth} ETH`);
     } else {
-      log.info(`📊 Configuration: Min Ethos Score: ${config.minEthosScore}, Max Investment: ${config.maxInvestmentEth} ETH`);
+      log.info(`📊 Active Strategy: Min Ethos Score: ${cliOptions.strategy.minEthosScore}, Trade Amount: ${cliOptions.strategy.tradeAmountEth} ETH`);
       log.info(`📋 Log Level: ${logLevel} (set LOG_LEVEL=WARN for quiet mode)`);
     }
 
-    // Initialize services
+    // Initialize services with strategy
     const ethosService = new EthosService();
     const zoraProfileService = new ZoraProfileService();
-    const tradingBot = new TradingBot(config, ethosService);
+    const tradingBot = new TradingBot(config, ethosService, cliOptions.strategy);
     const zoraListener = new ZoraListener(config, ethosService, zoraProfileService, tradingBot);
 
     // Start listening for Zora coin creations

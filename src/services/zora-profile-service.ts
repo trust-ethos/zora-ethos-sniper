@@ -34,6 +34,11 @@ export class ZoraProfileService {
         return null;
       }
 
+      // Debug: Log the raw Twitter social account data to understand structure
+      if (profile.socialAccounts?.twitter) {
+        log.debug(`🔍 RAW Twitter data:`, JSON.stringify(profile.socialAccounts.twitter, null, 2));
+      }
+
       const zoraProfile: ZoraProfile = {
         id: profile.id,
         handle: profile.handle,
@@ -41,7 +46,8 @@ export class ZoraProfileService {
         bio: profile.bio,
         website: profile.website,
         walletAddress: profile.publicWallet?.walletAddress,
-        twitterUsername: profile.socialAccounts?.twitter?.displayName,
+        // FIX: Use username instead of displayName for Twitter handle
+        twitterUsername: profile.socialAccounts?.twitter?.username || profile.socialAccounts?.twitter?.handle || profile.socialAccounts?.twitter?.displayName,
         instagramUsername: profile.socialAccounts?.instagram?.displayName,
         tiktokUsername: profile.socialAccounts?.tiktok?.displayName,
         creatorCoinAddress: profile.creatorCoin?.address,
@@ -51,6 +57,18 @@ export class ZoraProfileService {
       log.debug(`✅ Found Zora profile: ${zoraProfile.handle || zoraProfile.displayName || address}`);
       if (zoraProfile.twitterUsername) {
         log.debug(`🐦 Twitter connected: @${zoraProfile.twitterUsername}`);
+      }
+      
+      // Enhanced debug logging to understand Twitter field mapping
+      if (profile.socialAccounts?.twitter) {
+        const twitter = profile.socialAccounts.twitter;
+        log.debug(`🔍 Twitter field analysis:`);
+        log.debug(`   username: ${twitter.username || 'undefined'}`);
+        log.debug(`   handle: ${twitter.handle || 'undefined'}`);  
+        log.debug(`   displayName: ${twitter.displayName || 'undefined'}`);
+        log.debug(`   screenName: ${twitter.screenName || 'undefined'}`);
+        log.debug(`   id: ${twitter.id || 'undefined'}`);
+        log.debug(`   → Using: ${zoraProfile.twitterUsername}`);
       }
 
       return zoraProfile;

@@ -4,6 +4,8 @@ import type { EthosService } from "./ethos-service.ts";
 import type { ZoraCoinCreatedEvent } from "./zora-listener.ts";
 import type { ZoraProfile } from "./zora-profile-service.ts";
 import { DexService, type TradeResult } from "./dex-service.ts";
+import { PriceService } from "./price-service.ts";
+import type { TradingStrategy } from "../strategies/trading-strategy.ts";
 import type { Address } from "viem";
 
 export interface TradePosition {
@@ -11,17 +13,23 @@ export interface TradePosition {
   coinName: string;
   coinSymbol: string;
   entryPrice: number;
-  entryAmount: number;
+  originalAmount: number;     // Original position size
+  currentAmount: number;      // Current remaining position size  
   entryTime: Date;
   ethosScore: number;
   ethosAddress: string;
-  takeProfitTarget: number;
   stopLossTarget: number;
   maxHoldTime: Date;
+  
+  // Ladder tracking
+  levelsHit: number[];        // Track which levels we've already hit
+  totalSold: number;          // Total amount sold so far
+  realizedProfits: number;    // ETH profits realized from sales
+  
   isActive: boolean;
   exitPrice?: number;
   exitTime?: Date;
-  exitReason?: "TAKE_PROFIT" | "STOP_LOSS" | "TIME_LIMIT" | "MANUAL";
+  exitReason?: "FULL_EXIT" | "STOP_LOSS" | "TIME_LIMIT" | "MANUAL";
   profitLoss?: number;
 }
 
@@ -30,12 +38,22 @@ export class TradingBot {
   private positionHistory: TradePosition[] = [];
   private isMonitoring = false;
   private dexService: DexService;
+  private priceService: PriceService;
 
   constructor(
     private config: BotConfig,
-    private ethosService: EthosService
+    private ethosService: EthosService,
+    private strategy: TradingStrategy
   ) {
     this.dexService = new DexService(config);
+    this.priceService = new PriceService(config);
+    
+    log.info(`🎯 Trading Bot initialized with ${strategy.name.toUpperCase()} strategy`);
+    log.info(`   📊 Min Ethos: ${strategy.minEthosScore} | Trade Amount: ${strategy.tradeAmountEth} ETH`);
+    log.info(`   🛡️  Stop Loss: ${strategy.stopLossPercent}% | Ladder Levels: ${strategy.ladderLevels.length}`);
+    if (strategy.enableMoonBag) {
+      log.info(`   🌙 Moon Bag: ${strategy.moonBagPercent}% held for extreme gains`);
+    }
   }
 
   async evaluateAndTrade(
@@ -45,11 +63,15 @@ export class TradingBot {
     creatorProfile?: ZoraProfile
   ): Promise<boolean> {
     try {
+      // Prominent WARN log for qualifying users (shows even in WARN mode)
+      log.warn(`🎯 FOUND QUALIFYING CREATOR: ${event.name} (@${ethosAddress})`);
+      log.warn(`   📊 Credibility Score: ${ethosScore} (${this.ethosService.getRiskAssessment(ethosScore)})`);
+      log.warn(`   💰 Attempting to buy: ${this.strategy.tradeAmountEth} ETH worth`);
+      log.warn(`   🎭 Strategy: ${this.strategy.name} (${this.strategy.aggressiveness})`);
+      
       const modePrefix = this.config.simulationMode ? "🎭 [SIMULATION]" : "💰 [LIVE]";
       
       log.info(`${modePrefix} 🤖 Evaluating trade for ${event.name} (${event.symbol})`);
-      log.info(`   📊 Ethos Score: ${ethosScore} from ${ethosAddress}`);
-      log.info(`   🎯 Risk Assessment: ${this.ethosService.getRiskAssessment(ethosScore)}`);
       log.info(`   🔗 Coin Address: ${event.coin}`);
       log.info(`   👤 Creator: ${event.caller}`);
 
@@ -57,13 +79,14 @@ export class TradingBot {
     const shouldTrade = await this.shouldExecuteTrade(event, ethosScore);
     
     if (!shouldTrade) {
-      log.info(`   ❌ Trade evaluation failed, skipping...`);
+      log.warn(`   ❌ SKIPPING QUALIFYING CREATOR: Trade evaluation failed`);
+      log.warn(`   🚫 Possible reasons: Max positions reached, insufficient funds, or safety checks`);
       return false;
     }
 
     if (this.config.simulationMode) {
-      log.warn(`   ✅ Trade criteria met! SIMULATING trade with ${this.config.tradeAmountEth} ETH`);
-      log.warn(`   🎭 This is simulation mode - no real money will be spent`);
+      log.info(`   ✅ Trade criteria met! SIMULATING trade with ${this.config.tradeAmountEth} ETH`);
+      log.info(`   🎭 This is simulation mode - no real money will be spent`);
     } else {
       log.warn(`   ✅ Trade criteria met! EXECUTING REAL trade with ${this.config.tradeAmountEth} ETH`);
       log.warn(`   ⚠️  This will spend REAL money from your wallet!`);
@@ -96,15 +119,15 @@ export class TradingBot {
     event: ZoraCoinCreatedEvent,
     ethosScore: number
   ): Promise<boolean> {
-    // Check Ethos score threshold (already checked in listener, but double-check)
-    if (!this.ethosService.meetsScoreThreshold(ethosScore, this.config.minEthosScore)) {
-      log.info(`   ❌ Ethos score ${ethosScore} below threshold ${this.config.minEthosScore}`);
+    // Check Ethos score threshold (use strategy criteria)
+    if (!this.ethosService.meetsScoreThreshold(ethosScore, this.strategy.minEthosScore)) {
+      log.info(`   ❌ Ethos score ${ethosScore} below ${this.strategy.name} strategy threshold ${this.strategy.minEthosScore}`);
       return false;
     }
 
-    // Check if we already have too many active positions
-    if (this.activePositions.size >= this.config.maxPositions) {
-      log.info(`   ❌ Too many active positions (${this.activePositions.size}/${this.config.maxPositions})`);
+    // Check if we already have too many active positions (use strategy limit)
+    if (this.activePositions.size >= this.strategy.maxPositions) {
+      log.info(`   ❌ Too many active positions (${this.activePositions.size}/${this.strategy.maxPositions}) for ${this.strategy.name} strategy`);
       return false;
     }
 
@@ -132,7 +155,7 @@ export class TradingBot {
     creatorProfile?: ZoraProfile
   ): Promise<void> {
     const now = new Date();
-    const tradeAmount = this.config.tradeAmountEth;
+    const tradeAmount = this.strategy.tradeAmountEth; // Use strategy amount
 
     // Check DEX service status for live trading
     if (!this.config.simulationMode) {
@@ -144,13 +167,14 @@ export class TradingBot {
       }
     }
 
-    const modeEmoji = this.config.simulationMode ? "🎭" : "💰";
-    const modeText = this.config.simulationMode ? "[SIMULATION]" : "[LIVE TRADE]";
+    const modeEmoji = this.config.simulationMode ? "🎭" : "💎";
+    const modeText = this.config.simulationMode ? "[SIMULATION]" : "[LADDER TRADE]";
     
-    log.warn(`${modeEmoji} ${modeText} Creating position for ${event.name}:`);
-    log.warn(`   💵 Trade Amount: ${tradeAmount} ETH`);
-    log.warn(`   🎯 Target: ${event.coin}`);
-    log.warn(`   📊 Ethos Score: ${ethosScore}`);
+    log.info(`${modeEmoji} ${modeText} Creating ${this.strategy.name.toUpperCase()} position for ${event.name}:`);
+    log.info(`   💵 Trade Amount: ${tradeAmount} ETH`);
+    log.info(`   🎯 Target: ${event.coin}`);
+    log.info(`   📊 Ethos Score: ${ethosScore}`);
+    log.info(`   🎭 Strategy: ${this.strategy.aggressiveness}`);
 
     let tradeResult: TradeResult;
     let actualEntryPrice = 0.001; // Default/simulated price
@@ -163,10 +187,10 @@ export class TradingBot {
         amountOut: "1000", // Simulated tokens received
         transactionHash: "0x" + Math.random().toString(16).slice(2),
       };
-      log.info(`   🎭 This is a simulated position - tracking for learning purposes`);
+      log.info(`   🎭 This is a simulated ${this.strategy.name} position - tracking for learning purposes`);
     } else {
       // Live trading mode - execute actual transaction
-      log.warn(`   ⚠️  EXECUTING REAL TRANSACTION WITH REAL MONEY!`);
+      log.warn(`   ⚠️  EXECUTING REAL ${this.strategy.name.toUpperCase()} TRANSACTION WITH REAL MONEY!`);
       
       tradeResult = await this.dexService.buyToken(
         event.coin as Address,
@@ -178,7 +202,7 @@ export class TradingBot {
         return;
       }
 
-      log.warn(`✅ Live trade executed successfully!`);
+      log.warn(`✅ Live ladder trade executed successfully!`);
       log.warn(`   TX Hash: ${tradeResult.transactionHash}`);
       log.warn(`   Tokens Received: ${tradeResult.amountOut}`);
       
@@ -186,34 +210,56 @@ export class TradingBot {
       actualEntryPrice = parseFloat(tradeResult.amountIn) / parseFloat(tradeResult.amountOut || "1");
     }
 
-    // Create position tracking object
+    // Create LADDER position tracking object
     const position: TradePosition = {
       coinAddress: event.coin.toLowerCase(),
       coinName: event.name,
       coinSymbol: event.symbol,
       entryPrice: actualEntryPrice,
-      entryAmount: tradeAmount,
+      originalAmount: tradeAmount,       // Track original position size
+      currentAmount: tradeAmount,        // Start with full position
       entryTime: now,
       ethosScore,
       ethosAddress,
-      takeProfitTarget: actualEntryPrice * (1 + this.config.takeProfitPercent / 100),
-      stopLossTarget: actualEntryPrice * (1 - this.config.stopLossPercent / 100),
-      maxHoldTime: new Date(now.getTime() + this.config.maxHoldTimeMinutes * 60000),
+      stopLossTarget: actualEntryPrice * (1 - this.strategy.stopLossPercent / 100), // Use strategy stop loss
+      maxHoldTime: new Date(now.getTime() + this.strategy.maxHoldTimeMinutes * 60000), // Use strategy hold time
+      
+      // Initialize ladder tracking
+      levelsHit: [],
+      totalSold: 0,
+      realizedProfits: 0,
+      
       isActive: true,
     };
 
     // Store the position for monitoring
     this.activePositions.set(position.coinAddress, position);
 
-    log.warn(`📊 Position Details:`);
-    log.warn(`   📈 Take Profit: ${position.takeProfitTarget.toFixed(6)} ETH (+${this.config.takeProfitPercent}%)`);
-    log.warn(`   📉 Stop Loss: ${position.stopLossTarget.toFixed(6)} ETH (-${this.config.stopLossPercent}%)`);
-    log.warn(`   ⏰ Max Hold Time: ${position.maxHoldTime.toISOString()}`);
+    log.info(`🎯 LADDER SETUP for ${event.symbol}:`);
+    log.info(`   💰 Position Size: ${tradeAmount} ETH`);
+    log.info(`   🛡️  Stop Loss: -${this.strategy.stopLossPercent}% (${position.stopLossTarget.toFixed(6)} ETH`);
+    log.info(`   ⏰ Max Hold: ${Math.round(this.strategy.maxHoldTimeMinutes/60)} hours`);
+    log.info(`   🎯 Ladder Levels: ${this.strategy.ladderLevels.length} profit-taking levels`);
+    
+    if (this.strategy.enableMoonBag) {
+      log.info(`   🌙 Moon Bag: ~${this.strategy.moonBagPercent}% held for extreme gains (10000%+)`);
+    } else {
+      log.info(`   ❌ No Moon Bag: Full exit after all ladder levels`);
+    }
+    
+    // Show first few ladder levels
+    this.strategy.ladderLevels.slice(0, 3).forEach((level, i) => {
+      const trigger = level.triggerPercent + 100; // Convert to multiplier
+              log.info(`   ${i+1}. ${trigger/100}x → Sell ${level.sellPercent}%`);
+    });
+    if (this.strategy.ladderLevels.length > 3) {
+      log.info(`   ... and ${this.strategy.ladderLevels.length - 3} more levels`);
+    }
     
     if (this.config.simulationMode) {
-      log.info(`   🔍 Position created in simulation mode`);
+      log.info(`   🔍 Ladder position created in simulation mode`);
     } else {
-      log.warn(`   💰 LIVE POSITION CREATED - Real money at risk!`);
+      log.info(`   💎 LIVE LADDER POSITION CREATED - Diamond hands activated!`);
     }
   }
 
@@ -221,10 +267,10 @@ export class TradingBot {
     if (this.isMonitoring) return;
 
     this.isMonitoring = true;
-    log.info("🔄 Starting position monitoring...");
+    log.info(`🔄 Starting ${this.strategy.name.toUpperCase()} position monitoring...`);
 
-    // Check positions every 30 seconds
-    const monitoringInterval = 30000;
+    // Use strategy-specific monitoring interval
+    const monitoringInterval = this.strategy.monitoringIntervalMs;
 
     const intervalId = setInterval(async () => {
       if (this.activePositions.size === 0) {
@@ -249,22 +295,46 @@ export class TradingBot {
 
     for (const [coinAddress, position] of this.activePositions) {
       try {
-        // Simulate current price (in a real implementation, you'd fetch from DEX)
-        const currentPrice = this.simulateCurrentPrice(position);
-        
-        // Check exit conditions
-        const exitReason = this.checkExitConditions(position, currentPrice, now);
-        
-        if (exitReason) {
-          await this.closePosition(coinAddress, currentPrice, exitReason, now);
+        // Get real current price using PriceService
+        const currentPrice = await this.getCurrentPrice(position);
+        const currentValueETH = currentPrice * position.currentAmount;
+        const totalReturnPercent = ((currentValueETH - position.entryPrice) / position.entryPrice) * 100;
+
+        // Check for ladder level triggers
+        await this.checkLadderLevels(position, currentPrice, totalReturnPercent);
+
+        // Check stop loss (only if we haven't hit any profit levels yet)
+        if (position.levelsHit.length === 0 && currentPrice <= position.stopLossTarget) {
+          await this.executeStopLoss(position, currentPrice, now);
           positionsToClose.push(coinAddress);
-        } else {
-          // Log current status periodically
-          const profitLoss = ((currentPrice - position.entryPrice) / position.entryPrice) * 100;
-          log.debug(`📊 ${position.coinSymbol}: ${profitLoss.toFixed(2)}% P/L, Current: ${currentPrice} ETH`);
+          continue;
         }
+
+        // Check max hold time
+        if (now >= position.maxHoldTime) {
+          await this.executeTimeLimit(position, currentPrice, now);
+          positionsToClose.push(coinAddress);
+          continue;
+        }
+
+        // Log current status with ladder details
+        const realizedPercent = (position.realizedProfits / position.originalAmount) * 100;
+        const unrealizedPercent = ((currentValueETH - position.currentAmount) / position.originalAmount) * 100;
+        
+        log.debug(`💎 ${position.coinSymbol} (${this.strategy.name}):`);
+        log.debug(`   📊 Total Return: ${totalReturnPercent.toFixed(1)}%`);
+        log.debug(`   💰 Realized: ${realizedPercent.toFixed(1)}% | Unrealized: ${unrealizedPercent.toFixed(1)}%`);
+        log.debug(`   📈 Position: ${((position.currentAmount / position.originalAmount) * 100).toFixed(1)}% remaining`);
+        log.debug(`   🎯 Levels Hit: ${position.levelsHit.length}/${this.strategy.ladderLevels.length}`);
+        
+        const priceChange = this.priceService.getPriceChange(coinAddress as Address, 30);
+        if (priceChange) {
+          const changeEmoji = priceChange.changeDirection === "UP" ? "📈" : priceChange.changeDirection === "DOWN" ? "📉" : "➡️";
+          log.debug(`   ${changeEmoji} 30min change: ${priceChange.changePercent.toFixed(2)}%`);
+        }
+        
       } catch (error) {
-        log.error(`Error checking position ${coinAddress}: ${error instanceof Error ? error.message : String(error)}`);
+        log.error(`Error checking ladder position ${coinAddress}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -274,13 +344,127 @@ export class TradingBot {
     });
   }
 
-  private simulateCurrentPrice(position: TradePosition): number {
-    // Simulate price movement (in a real implementation, fetch from DEX/oracle)
-    const timeElapsed = Date.now() - position.entryTime.getTime();
-    const volatility = 0.0001; // Simulated volatility
-    const randomChange = (Math.random() - 0.5) * volatility * (timeElapsed / 60000); // Change over time
+  private async getCurrentPrice(position: TradePosition): Promise<number> {
+    try {
+      // Get real price from PriceService
+      const priceQuote = await this.priceService.getCurrentPrice(
+        position.coinAddress as Address,
+        position.currentAmount // Use current position size as reference amount
+      );
+      
+      if (priceQuote.source === "ZORA_SDK") {
+        log.debug(`📊 Real price for ${position.coinSymbol}: ${priceQuote.priceInETH.toFixed(6)} ETH (${priceQuote.confidence} confidence)`);
+      } else {
+        log.debug(`🎭 Simulated price for ${position.coinSymbol}: ${priceQuote.priceInETH.toFixed(6)} ETH`);
+      }
+      
+      return priceQuote.priceInETH;
+      
+    } catch (error) {
+      log.warn(`⚠️ Failed to get current price for ${position.coinSymbol}, using entry price: ${error instanceof Error ? error.message : String(error)}`);
+      
+      // Fallback to entry price if all else fails
+      return position.entryPrice;
+    }
+  }
+
+  private async checkLadderLevels(position: TradePosition, currentPrice: number, totalReturnPercent: number): Promise<void> {
+    for (let i = 0; i < this.strategy.ladderLevels.length; i++) {
+      const level = this.strategy.ladderLevels[i];
+      
+      // Skip if we already hit this level
+      if (position.levelsHit.includes(i)) continue;
+      
+      // Check if we hit this level
+      if (totalReturnPercent >= level.triggerPercent) {
+        await this.executeLadderLevel(position, level, i, currentPrice);
+      }
+    }
+  }
+
+  private async executeLadderLevel(
+    position: TradePosition, 
+    level: { triggerPercent: number; sellPercent: number; description: string }, 
+    levelIndex: number, 
+    currentPrice: number
+  ): Promise<void> {
+    const sellAmount = position.currentAmount * (level.sellPercent / 100);
+    const sellValueETH = sellAmount * currentPrice;
     
-    return Math.max(position.entryPrice + randomChange, 0.0001); // Minimum price floor
+    log.warn(`🎯 LADDER TRIGGER: ${position.coinSymbol} hit ${level.triggerPercent + 100}% gain!`);
+    log.warn(`   📝 ${level.description}`);
+    log.warn(`   💰 Selling ${level.sellPercent}% of remaining position (${sellAmount.toFixed(6)} tokens)`);
+    log.warn(`   💎 Keeping ${100 - level.sellPercent}% for further gains`);
+
+    if (!this.config.simulationMode && this.config.enableSelling) {
+      try {
+        // Convert sell amount to proper token units for the actual trade
+        const tokenAmount = BigInt(Math.floor(sellAmount * 1e18)); // Assuming 18 decimals
+        const sellResult = await this.dexService.sellToken(position.coinAddress as Address, tokenAmount);
+        
+        if (sellResult.success) {
+          log.warn(`   ✅ Ladder sell successful! TX: ${sellResult.transactionHash}`);
+        } else {
+          log.error(`   ❌ Ladder sell failed: ${sellResult.error}`);
+          return; // Don't update position if trade failed
+        }
+      } catch (error) {
+        log.error(`   ❌ Ladder sell error: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+    }
+
+    // Update position
+    position.currentAmount -= sellAmount;
+    position.totalSold += sellAmount;
+    position.realizedProfits += sellValueETH - (sellAmount * position.entryPrice);
+    position.levelsHit.push(levelIndex);
+
+    const remainingPercent = (position.currentAmount / position.originalAmount) * 100;
+    log.warn(`   📊 Position Update: ${remainingPercent.toFixed(1)}% remaining (moon bag status!)`);
+  }
+
+  private async executeStopLoss(position: TradePosition, currentPrice: number, now: Date): Promise<void> {
+    log.warn(`🛡️ STOP LOSS triggered for ${position.coinSymbol} at ${currentPrice.toFixed(6)} ETH`);
+    
+    if (!this.config.simulationMode && this.config.enableSelling && position.currentAmount > 0.001) {
+      const tokenAmount = BigInt(Math.floor(position.currentAmount * 1e18));
+      const sellResult = await this.dexService.sellToken(position.coinAddress as Address, tokenAmount);
+      
+      if (sellResult.success) {
+        log.warn(`   ✅ Stop loss sell successful! TX: ${sellResult.transactionHash}`);
+      } else {
+        log.error(`   ❌ Stop loss sell failed: ${sellResult.error}`);
+      }
+    }
+
+    const totalLoss = ((currentPrice - position.entryPrice) / position.entryPrice) * 100;
+    position.isActive = false;
+    position.exitPrice = currentPrice;
+    position.exitTime = now;
+    position.exitReason = "STOP_LOSS";
+    
+    log.warn(`   📊 Final Loss: ${totalLoss.toFixed(2)}%`);
+  }
+
+  private async executeTimeLimit(position: TradePosition, currentPrice: number, now: Date): Promise<void> {
+    log.warn(`⏰ TIME LIMIT reached for ${position.coinSymbol} - selling remaining position`);
+    
+    if (!this.config.simulationMode && this.config.enableSelling && position.currentAmount > 0.001) {
+      const tokenAmount = BigInt(Math.floor(position.currentAmount * 1e18));
+      const sellResult = await this.dexService.sellToken(position.coinAddress as Address, tokenAmount);
+      
+      if (sellResult.success) {
+        log.warn(`   ✅ Time limit sell successful! TX: ${sellResult.transactionHash}`);
+      } else {
+        log.error(`   ❌ Time limit sell failed: ${sellResult.error}`);
+      }
+    }
+
+    position.isActive = false;
+    position.exitPrice = currentPrice;
+    position.exitTime = now;
+    position.exitReason = "TIME_LIMIT";
   }
 
   private checkExitConditions(
@@ -379,7 +563,7 @@ export class TradingBot {
   async closeAllPositions(): Promise<void> {
     const now = new Date();
     for (const [coinAddress, position] of this.activePositions) {
-      const currentPrice = this.simulateCurrentPrice(position);
+      const currentPrice = await this.getCurrentPrice(position);
       await this.closePosition(coinAddress, currentPrice, "MANUAL", now);
     }
     this.activePositions.clear();
@@ -417,13 +601,13 @@ export class TradingBot {
       return sum;
     }, 0);
 
-    log.warn(`📊 🎭 SIMULATION SUMMARY:`);
-    log.warn(`   📈 Total Trades: ${stats.totalTrades}`);
+    log.info(`📊 🎭 SIMULATION SUMMARY:`);
+    log.info(`   📈 Total Trades: ${stats.totalTrades}`);
     log.warn(`   🎯 Win Rate: ${stats.winRate.toFixed(1)}%`);
     log.warn(`   📊 Avg P&L: ${stats.avgProfitLoss.toFixed(2)}%`);
     log.warn(`   💰 Total Simulated Investment: ${totalSimulatedValue.toFixed(4)} ETH`);
     log.warn(`   💵 Total Simulated Profit: ${totalSimulatedProfitETH.toFixed(4)} ETH`);
-    log.warn(`   🎭 Remember: This is simulation - no real money involved!`);
+    log.info(`   🎭 Remember: This is simulation - no real money involved!`);
   }
 
   // Method to manually log full simulation report
