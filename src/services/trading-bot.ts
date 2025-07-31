@@ -124,6 +124,9 @@ export class TradingBot {
       log.info(`   ❌ Ethos score ${ethosScore} below ${this.strategy.name} strategy threshold ${this.strategy.minEthosScore}`);
       return false;
     }
+    
+    log.warn(`   ✅ QUALIFIES! Score ${ethosScore} ≥ ${this.strategy.minEthosScore} (${this.strategy.name} strategy)`);
+    log.warn(`🎯 FOUND QUALIFYING CREATOR: ${event.name} (@${event.caller})`);
 
     // Check if we already have too many active positions (use strategy limit)
     if (this.activePositions.size >= this.strategy.maxPositions) {

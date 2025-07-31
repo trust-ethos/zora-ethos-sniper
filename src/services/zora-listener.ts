@@ -265,31 +265,25 @@ export class ZoraListener {
       log.info(`   📊 Ethos score: ${ethosScore} (${this.ethosService.getRiskAssessment(ethosScore)})`);
       log.info(`   🎯 Risk assessment: ${this.ethosService.getRiskAssessment(ethosScore)}`);
 
-      // Check if the score meets our threshold
-      if (this.ethosService.meetsScoreThreshold(ethosScore, this.config.minEthosScore)) {
-        log.warn(`   ✅ QUALIFIES! Score ${ethosScore} ≥ ${this.config.minEthosScore}`);
+      // Let TradingBot handle the threshold check with strategy-specific values
+      // Notify the trading bot with enhanced data and error handling
+      try {
+        await this.tradingBot.evaluateAndTrade(event, ethosScore, event.caller, creatorProfile);
+      } catch (tradeError) {
+        const tradeErrorMsg = tradeError instanceof Error ? tradeError.message : String(tradeError);
+        log.error(`❌ Trading failed for ${event.name} (${event.coin}): ${tradeErrorMsg}`);
         
-        // Notify the trading bot with enhanced data and error handling
-        try {
-          await this.tradingBot.evaluateAndTrade(event, ethosScore, event.caller, creatorProfile);
-        } catch (tradeError) {
-          const tradeErrorMsg = tradeError instanceof Error ? tradeError.message : String(tradeError);
-          log.error(`❌ Trading failed for ${event.name} (${event.coin}): ${tradeErrorMsg}`);
-          
-          // Log specific error types for debugging
-          if (tradeErrorMsg.includes('does not exist')) {
-            log.error(`🔍 TOKEN NOT FOUND: ${event.coin} - Contract does not exist on Base`);
-          } else if (tradeErrorMsg.includes('Quote failed')) {
-            log.error(`🔍 QUOTE FAILURE: ${event.coin} - Zora API issues`);
-          } else if (tradeErrorMsg.includes('500')) {
-            log.error(`🔍 SERVER ERROR: ${event.coin} - Zora API server error`);
-          }
-          
-          // Continue monitoring other events
-          log.info(`🔄 Continuing to monitor for other opportunities...`);
+        // Log specific error types for debugging
+        if (tradeErrorMsg.includes('does not exist')) {
+          log.error(`🔍 TOKEN NOT FOUND: ${event.coin} - Contract does not exist on Base`);
+        } else if (tradeErrorMsg.includes('Quote failed')) {
+          log.error(`🔍 QUOTE FAILURE: ${event.coin} - Zora API issues`);
+        } else if (tradeErrorMsg.includes('500')) {
+          log.error(`🔍 SERVER ERROR: ${event.coin} - Zora API server error`);
         }
-      } else {
-        log.info(`   ❌ Score too low - SKIPPED (${ethosScore} < ${this.config.minEthosScore})`);
+        
+        // Continue monitoring other events
+        log.info(`🔄 Continuing to monitor for other opportunities...`);
       }
 
     } catch (error) {

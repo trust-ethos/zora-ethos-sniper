@@ -159,10 +159,10 @@ export const DEGEN_STRATEGY: TradingStrategy = {
   name: "Degen",
   description: "Maximum moon bag strategy for 10000%+ potential",
   
-  minEthosScore: 1226,       // Cast a wide net
-  maxInvestmentEth: 0.01,
-  tradeAmountEth: 0.0025,     // Significant positions
-  maxPositions: 5,
+  minEthosScore: 1600,       // Cast a wide net
+  maxInvestmentEth: 0.015,
+  tradeAmountEth: 0.015,     // Significant positions
+  maxPositions: 1,
   
   stopLossPercent: 70,      // Very wide stop loss
   maxHoldTimeMinutes: 15, // 5 days (!!)
