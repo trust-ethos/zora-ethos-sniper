@@ -63,6 +63,7 @@
     "fix-events": "deno run --allow-net --allow-env --allow-read scripts/fix-event-decoding.ts",
     "test-extraction": "deno run --allow-net --allow-env --allow-read scripts/test-fixed-extraction.ts",
     "test-threshold": "deno run --allow-net --allow-env --allow-read scripts/test-strategy-threshold.ts",
+    "test-warn-fix": "deno run --allow-net --allow-env --allow-read scripts/test-warn-logging-fix.ts",
     "check-networks": "deno run --allow-net --allow-env --allow-read scripts/check-zora-network.ts"
   },
   "imports": {

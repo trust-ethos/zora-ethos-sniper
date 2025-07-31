@@ -63,26 +63,25 @@ export class TradingBot {
     creatorProfile?: ZoraProfile
   ): Promise<boolean> {
     try {
-      // Prominent WARN log for qualifying users (shows even in WARN mode)
-      log.warn(`🎯 FOUND QUALIFYING CREATOR: ${event.name} (@${ethosAddress})`);
-      log.warn(`   📊 Credibility Score: ${ethosScore} (${this.ethosService.getRiskAssessment(ethosScore)})`);
-      log.warn(`   💰 Attempting to buy: ${this.strategy.tradeAmountEth} ETH worth`);
-      log.warn(`   🎭 Strategy: ${this.strategy.name} (${this.strategy.aggressiveness})`);
-      
       const modePrefix = this.config.simulationMode ? "🎭 [SIMULATION]" : "💰 [LIVE]";
       
       log.info(`${modePrefix} 🤖 Evaluating trade for ${event.name} (${event.symbol})`);
       log.info(`   🔗 Coin Address: ${event.coin}`);
       log.info(`   👤 Creator: ${event.caller}`);
 
-          // Check if we should trade based on various criteria
-    const shouldTrade = await this.shouldExecuteTrade(event, ethosScore);
+      // Check if we should trade based on various criteria
+      const shouldTrade = await this.shouldExecuteTrade(event, ethosScore);
+      
+      if (!shouldTrade) {
+        // This user didn't qualify - no WARN logs (already handled in shouldExecuteTrade)
+        return false;
+      }
+
+      // Only show WARN logs for users who actually qualify
+      log.warn(`   📊 Credibility Score: ${ethosScore} (${this.ethosService.getRiskAssessment(ethosScore)})`);
+      log.warn(`   💰 Attempting to buy: ${this.strategy.tradeAmountEth} ETH worth`);
+      log.warn(`   🎭 Strategy: ${this.strategy.name} (${this.strategy.aggressiveness})`);
     
-    if (!shouldTrade) {
-      log.warn(`   ❌ SKIPPING QUALIFYING CREATOR: Trade evaluation failed`);
-      log.warn(`   🚫 Possible reasons: Max positions reached, insufficient funds, or safety checks`);
-      return false;
-    }
 
     if (this.config.simulationMode) {
       log.info(`   ✅ Trade criteria met! SIMULATING trade with ${this.config.tradeAmountEth} ETH`);
